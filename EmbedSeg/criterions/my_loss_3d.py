@@ -90,10 +90,14 @@ class SpatialEmbLoss_3d(nn.Module):
             label = labels[b].unsqueeze(0)  # 1 x d x h x w
             center_image = center_images[b].unsqueeze(0)  # 1 x d x h x w
             instance_ids = instance.unique()
-            instance_ids = instance_ids[instance_ids != 0]
+            instance_ids = instance_ids[instance_ids > 0]
+
+            # pixels labelled -1 carry no information and are excluded from the loss
+            ignore = instance < 0  # 1 x d x h x w
+            n_valid = (~ignore).sum().clamp(min=1)
 
             # regress bg to zero
-            bg_mask = label == 0
+            bg_mask = (label == 0) & ~ignore
 
             if bg_mask.sum() > 0:
                 seed_loss += torch.sum(torch.pow(seed_map[bg_mask] - 0, 2))
@@ -127,7 +131,11 @@ class SpatialEmbLoss_3d(nn.Module):
                 )
 
                 # apply lovasz-hinge loss
-                instance_loss = instance_loss + lovasz_hinge(dist * 2 - 1, in_mask)
+                lovasz_labels = in_mask.long()
+                lovasz_labels[ignore] = -1
+                instance_loss = instance_loss + lovasz_hinge(
+                    dist * 2 - 1, lovasz_labels, ignore=-1
+                )
 
                 # seed loss
                 seed_loss += self.foreground_weight * torch.sum(
@@ -144,7 +152,7 @@ class SpatialEmbLoss_3d(nn.Module):
                 instance_loss /= obj_count
                 var_loss /= obj_count
 
-            seed_loss = seed_loss / (depth * height * width)
+            seed_loss = seed_loss / n_valid
 
             loss += w_inst * instance_loss + w_var * var_loss + w_seed * seed_loss
 

@@ -536,7 +536,7 @@ def calculate_object_size(
                 size_list.append(len(x))
         elif not one_hot and mode == "2d":
             ids = np.unique(ma)
-            ids = ids[ids != background_id]
+            ids = ids[ids > background_id]
             for id in ids:
                 y, x = np.where(ma == id)
                 size_list_x.append(np.max(x) - np.min(x))
@@ -544,7 +544,7 @@ def calculate_object_size(
                 size_list.append(len(x))
         elif not one_hot and mode in ["3d", "3d_sliced"]:
             ids = np.unique(ma)
-            ids = ids[ids != background_id]
+            ids = ids[ids > background_id]
             if process_k is not None:
                 n_ids = process_k[1]
             else:
@@ -559,7 +559,7 @@ def calculate_object_size(
         elif not one_hot and mode == "3d_ilp":
             for z in range(ma.shape[0]):
                 ids = np.unique(ma[z])
-                ids = ids[ids != background_id]
+                ids = ids[ids > background_id]
                 for id in ids:
                     y, x = np.where(ma[z] == id)
                     size_list_y.append(np.max(y) - np.min(y))

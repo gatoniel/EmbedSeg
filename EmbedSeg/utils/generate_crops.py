@@ -37,6 +37,10 @@ def fill_label_holes(lbl_img, **kwargs):
     def shrink(interior):
         return tuple(slice(int(w[0]), (-1 if w[1] else None)) for w in interior)
 
+    # pixels labelled -1 are ignored (unknown); keep them and fill holes of the objects only
+    ignore = lbl_img < 0
+    lbl_img = np.where(ignore, 0, lbl_img)
+
     objects = find_objects(lbl_img)
     lbl_img_filled = np.zeros_like(lbl_img)
     for i, sl in enumerate(objects, 1):
@@ -47,6 +51,7 @@ def fill_label_holes(lbl_img, **kwargs):
         grown_mask = lbl_img[grow(sl, interior)] == i
         mask_filled = binary_fill_holes(grown_mask, **kwargs)[shrink_slice]
         lbl_img_filled[sl][mask_filled] = i
+    lbl_img_filled[ignore & (lbl_img_filled == 0)] = -1
     return lbl_img_filled
 
 
@@ -373,7 +378,7 @@ def process(
         os.makedirs(os.path.dirname(center_image_path))
         print("Created new directory : {}".format(center_image_path))
 
-    instance = tifffile.imread(inst).astype(np.uint16)
+    instance = tifffile.imread(inst).astype(np.int32)
     image = tifffile.imread(im).astype(float)
 
     if norm == "min-max-percentile":
@@ -591,7 +596,7 @@ def process_3d(
         os.makedirs(os.path.dirname(center_image_path))
         print("Created new directory : {}".format(center_image_path))
 
-    instance = tifffile.imread(inst).astype(np.uint16)
+    instance = tifffile.imread(inst).astype(np.int32)
     image = tifffile.imread(im).astype(float)
 
     if norm == "min-max-percentile":
@@ -672,7 +677,7 @@ def process_3d(
             if rle_encode:
                 encode(
                     instance_path + os.path.basename(im)[:-4] + "_{:03d}.csv".format(j),
-                    instance_crop.astype(np.uint16),
+                    instance_crop.astype(np.int32),
                 )
                 encode(
                     center_image_path
@@ -683,7 +688,7 @@ def process_3d(
             else:
                 tifffile.imwrite(
                     instance_path + os.path.basename(im)[:-4] + "_{:03d}.tif".format(j),
-                    instance_crop.astype(np.uint16),
+                    instance_crop.astype(np.int32),
                 )
                 tifffile.imwrite(
                     center_image_path
@@ -753,7 +758,7 @@ def process_one_hot(
     except FileExistsError:
         pass
 
-    instance = tifffile.imread(inst).astype(np.uint16)
+    instance = tifffile.imread(inst).astype(np.int32)
     image = tifffile.imread(im).astype(float)
 
     if norm == "min-max-percentile":
@@ -918,7 +923,7 @@ def process_3d_sliced(
         os.makedirs(os.path.dirname(center_image_path))
         print("Created new directory : {}".format(center_image_path))
 
-    instance = tifffile.imread(inst).astype(np.uint16)
+    instance = tifffile.imread(inst).astype(np.int32)
     image = tifffile.imread(im).astype(float)
     if norm == "min-max-percentile":
         image = normalize_min_max_percentile(image, 1, 99.8, axis=(0, 1, 2))
@@ -971,7 +976,7 @@ def process_3d_sliced(
                 instance_crop = instance_np[
                     kk : kk + crop_size_z, jj : jj + crop_size_y, x
                 ]
-                if np.sum(instance_crop) > 0:  # shouldn't be only background
+                if np.any(instance_crop > 0):  # shouldn't be only background
                     center_image_crop = generate_center_image(
                         instance_crop, center, ids, one_hot=one_hot
                     )
@@ -990,7 +995,7 @@ def process_3d_sliced(
                             + "_{:03d}".format(id)
                             + "_{:03d}".format(x)
                             + "_ZY.csv",
-                            instance_crop.astype(np.uint16),
+                            instance_crop.astype(np.int32),
                         )
                         encode(
                             center_image_path
@@ -1007,7 +1012,7 @@ def process_3d_sliced(
                             + "_{:03d}".format(id)
                             + "_{:03d}".format(x)
                             + "_ZY.tif",
-                            instance_crop.astype(np.uint16),
+                            instance_crop.astype(np.int32),
                         )
                         tifffile.imwrite(
                             center_image_path
@@ -1028,7 +1033,7 @@ def process_3d_sliced(
                 instance_crop = instance_np[
                     z, jj : jj + crop_size_y, ii : ii + crop_size_x
                 ]
-                if np.sum(instance_crop) > 0:
+                if np.any(instance_crop > 0):
                     center_image_crop = generate_center_image(
                         instance_crop, center, ids, one_hot=one_hot
                     )
@@ -1047,7 +1052,7 @@ def process_3d_sliced(
                             + "_{:03d}".format(id)
                             + "_{:03d}".format(z)
                             + "_YX.csv",
-                            instance_crop.astype(np.uint16),
+                            instance_crop.astype(np.int32),
                         )
                         encode(
                             center_image_path
@@ -1064,7 +1069,7 @@ def process_3d_sliced(
                             + "_{:03d}".format(id)
                             + "_{:03d}".format(z)
                             + "_YX.tif",
-                            instance_crop.astype(np.uint16),
+                            instance_crop.astype(np.int32),
                         )
                         tifffile.imwrite(
                             center_image_path
@@ -1087,7 +1092,7 @@ def process_3d_sliced(
                 instance_crop = np.transpose(
                     instance_np[kk : kk + crop_size_z, y, ii : ii + crop_size_x]
                 )
-                if np.sum(instance_crop) > 0:
+                if np.any(instance_crop > 0):
                     center_image_crop = generate_center_image(
                         instance_crop, center, ids, one_hot=one_hot
                     )
@@ -1106,7 +1111,7 @@ def process_3d_sliced(
                             + "_{:03d}".format(id)
                             + "_{:03d}".format(y)
                             + "_XZ.csv",
-                            instance_crop.astype(np.uint16),
+                            instance_crop.astype(np.int32),
                         )
                         encode(
                             center_image_path
@@ -1123,7 +1128,7 @@ def process_3d_sliced(
                             + "_{:03d}".format(id)
                             + "_{:03d}".format(y)
                             + "_XZ.tif",
-                            instance_crop.astype(np.uint16),
+                            instance_crop.astype(np.int32),
                         )
                         tifffile.imwrite(
                             center_image_path
@@ -1216,7 +1221,7 @@ def process_3d_ilp(
         os.makedirs(os.path.dirname(center_image_path))
         print("Created new directory : {}".format(center_image_path))
 
-    instance = tifffile.imread(inst).astype(np.uint16)
+    instance = tifffile.imread(inst).astype(np.int32)
     image = tifffile.imread(im).astype(float)
     if norm == "min-max-percentile":
         image = normalize_min_max_percentile(image, 1, 99.8, axis=(0, 1, 2))
@@ -1260,7 +1265,7 @@ def process_3d_ilp(
                 instance_crop = instance_np[
                     z, jj : jj + crop_size_y, ii : ii + crop_size_x
                 ]
-                if np.sum(instance_crop) > 0:
+                if np.any(instance_crop > 0):
                     center_image_crop = generate_center_image(
                         instance_crop, center, ids, one_hot=one_hot
                     )
@@ -1279,7 +1284,7 @@ def process_3d_ilp(
                             + "_{:03d}".format(id)
                             + "_{:03d}".format(z)
                             + "_YX.csv",
-                            instance_crop.astype(np.uint16),
+                            instance_crop.astype(np.int32),
                         )
                         encode(
                             center_image_path
@@ -1296,7 +1301,7 @@ def process_3d_ilp(
                             + "_{:03d}".format(id)
                             + "_{:03d}".format(z)
                             + "_YX.tif",
-                            instance_crop.astype(np.uint16),
+                            instance_crop.astype(np.int32),
                         )
                         tifffile.imwrite(
                             center_image_path

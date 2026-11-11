@@ -235,7 +235,7 @@ class ThreeDimensionalDataset(Dataset):
 
     @classmethod
     def decode_instance(cls, pic, one_hot, bg_id=None):
-        pic = np.asarray(pic, dtype=np.uint16)
+        pic = np.asarray(pic, dtype=np.int32)
         instance_map = np.zeros(
             (pic.shape[0], pic.shape[1], pic.shape[2]), dtype=np.int16
         )
@@ -252,6 +252,9 @@ class ThreeDimensionalDataset(Dataset):
                     class_map[np.max(mask, axis=0)] = 1
                 else:
                     class_map[mask] = 1
+
+        # pixels labelled -1 carry no information and are ignored in the loss
+        instance_map[pic < 0] = -1
 
         return instance_map, class_map
 
@@ -271,11 +274,11 @@ class ThreeDimensionalDataset(Dataset):
         else:
             if center:
                 mask_decoded = np.zeros(
-                    ast.literal_eval(df_numpy[0][2]), dtype=np.bool
+                    ast.literal_eval(df_numpy[0][2]), dtype=bool
                 )  # obtain size by reading first row of csv file
             else:
                 mask_decoded = np.zeros(
-                    ast.literal_eval(df_numpy[0][2]), dtype=np.uint16
+                    ast.literal_eval(df_numpy[0][2]), dtype=np.int32
                 )  # obtain size by reading first row of csv file
             for row in df_numpy:
                 d["counts"] = ast.literal_eval(row[1])

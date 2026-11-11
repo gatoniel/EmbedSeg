@@ -162,7 +162,7 @@ def train_vanilla(
                         instances[0].cpu(), key="groundtruth", title="Ground Truth"
                     )  # TODO
                     instance_ids = instances[0].unique()
-                    instance_ids = instance_ids[instance_ids != 0]
+                    instance_ids = instance_ids[instance_ids > 0]
 
                 if display_embedding:
                     (
@@ -392,7 +392,7 @@ def train_vanilla_3d(
                         title="Ground Truth",
                     )  # TODO
                     instance_ids = instances[0].unique()
-                    instance_ids = instance_ids[instance_ids != 0]
+                    instance_ids = instance_ids[instance_ids > 0]
 
                 visualizer.display(
                     predictions.cpu()[zslice, ...], key="prediction", title="Prediction"
@@ -542,7 +542,7 @@ def val_vanilla(
                             instances[0].cpu(), key="groundtruth", title="Ground Truth"
                         )  # TODO
                         instance_ids = instances[0].unique()
-                        instance_ids = instance_ids[instance_ids != 0]
+                        instance_ids = instance_ids[instance_ids > 0]
                     if display_embedding:
                         (
                             center_x,
@@ -773,7 +773,7 @@ def val_vanilla_3d(
                             title="Ground Truth",
                         )  # TODO
                         instance_ids = instances[0].unique()
-                        instance_ids = instance_ids[instance_ids != 0]
+                        instance_ids = instance_ids[instance_ids > 0]
 
                     visualizer.display(
                         predictions.cpu()[zslice, ...],
