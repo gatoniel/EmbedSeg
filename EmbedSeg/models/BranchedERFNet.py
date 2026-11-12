@@ -24,21 +24,37 @@ class BranchedERFNet(nn.Module):
         for n in num_classes:
             self.decoders.append(erfnet.Decoder(n))
 
+    # The first two decoders (offsets + sigma, seed) form the segmentation head.
+    # Any further decoder (e.g. tracking: offsets + sigma + division flag) is
+    # optional and skipped when forward(..., heads="seg") is used.
+    n_seg_decoders = 2
+
     def init_output(self, n_sigma=1):
         with torch.no_grad():
-            output_conv = self.decoders[0].output_conv
-            print("Initialize last layer with size: ", output_conv.weight.size())
-            print("*************************")
-            output_conv.weight[:, 0:2, :, :].fill_(0)
-            output_conv.bias[0:2].fill_(0)
+            # initialise the segmentation head and, if present, the tracking head
+            for idx in [0, 2]:
+                if idx >= len(self.decoders):
+                    continue
+                output_conv = self.decoders[idx].output_conv
+                print("Initialize last layer with size: ", output_conv.weight.size())
+                print("*************************")
+                output_conv.weight[:, 0:2, :, :].fill_(0)
+                output_conv.bias[0:2].fill_(0)
 
-            output_conv.weight[:, 2 : 2 + n_sigma, :, :].fill_(0)
-            output_conv.bias[2 : 2 + n_sigma].fill_(1)
+                output_conv.weight[:, 2 : 2 + n_sigma, :, :].fill_(0)
+                output_conv.bias[2 : 2 + n_sigma].fill_(1)
 
-    def forward(self, input, only_encode=False):
+    def forward(self, input, only_encode=False, heads="all"):
+        """heads="all" runs every decoder; heads="seg" skips the tracking
+        decoder(s) and returns only the segmentation channels."""
         if only_encode:
             return self.encoder.forward(input, predict=True)
         else:
             output = self.encoder(input)
 
-        return torch.cat([decoder.forward(output) for decoder in self.decoders], 1)
+        decoders = self.decoders
+        if heads == "seg":
+            decoders = self.decoders[: self.n_seg_decoders]
+        elif heads != "all":
+            raise ValueError("heads must be 'all' or 'seg', got {!r}".format(heads))
+        return torch.cat([decoder.forward(output) for decoder in decoders], 1)
