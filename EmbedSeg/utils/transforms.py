@@ -209,8 +209,16 @@ class ToTensorFromNumpy(object):
                     sample[k] = torch.from_numpy(
                         sample[k]
                     )  # np.int16 to torch.int16 or short
-                elif k == "center-image":
-                    sample[k] = torch.from_numpy(sample[k])  # np.bool to torch.Bool
+                elif k in (
+                    "center-image",
+                    "center_image",
+                    "center_image_prev",
+                    "instance_prev",
+                    "parent",
+                    "division",
+                ):
+                    # np.bool to torch.Bool, np.int16 to torch.int16 etc.
+                    sample[k] = torch.from_numpy(sample[k])
         return sample
 
 
