@@ -22,6 +22,20 @@ import numpy as np
 torch.backends.cudnn.benchmark = True
 
 
+def _tracking_kwargs(sample, device):
+    """Extra loss inputs of a tracking batch (empty for plain segmentation)."""
+    if "parent" not in sample:
+        return {}
+    return dict(
+        instances_prev=sample["instance_prev"].squeeze(1).to(device),
+        center_images_prev=sample["center_image_prev"].squeeze(1).to(device),
+        parents=sample["parent"].squeeze(1).to(device),
+        divisions=sample["division"].squeeze(1).to(device),
+        has_context=sample["has_context"].to(device),
+    )
+
+
+
 def train(virtual_batch_multiplier, one_hot, n_sigma, args, device):
     """Trains 2D Model with virtual multiplier
 
@@ -62,7 +76,14 @@ def train(virtual_batch_multiplier, one_hot, n_sigma, args, device):
         class_labels = sample["label"].squeeze(1).to(device)
         center_images = sample["center_image"].squeeze(1).to(device)
         output = model(im)  # Forward pass
-        loss = criterion(output, instances, class_labels, center_images, **args)
+        loss = criterion(
+            output,
+            instances,
+            class_labels,
+            center_images,
+            **args,
+            **_tracking_kwargs(sample, device),
+        )
         loss = loss / virtual_batch_multiplier  # Normalize our loss (if averaged)
         loss = loss.mean()
         loss.backward()  # Backward pass
@@ -139,7 +160,14 @@ def train_vanilla(
         class_labels = sample["label"].squeeze(1).to(device)  # 1YX
         center_images = sample["center_image"].squeeze(1).to(device)  # 1YX
         output = model(im)  # B 5 Y X
-        loss = criterion(output, instances, class_labels, center_images, **args)
+        loss = criterion(
+            output,
+            instances,
+            class_labels,
+            center_images,
+            **args,
+            **_tracking_kwargs(sample, device),
+        )
         loss = loss.mean()
         optimizer.zero_grad()
         loss.backward()
@@ -273,7 +301,14 @@ def train_3d(virtual_batch_multiplier, one_hot, n_sigma, args, device):
         center_images = sample["center_image"].squeeze(1).to(device)
         output = model(im)  # Forward pass
 
-        loss = criterion(output, instances, class_labels, center_images, **args)
+        loss = criterion(
+            output,
+            instances,
+            class_labels,
+            center_images,
+            **args,
+            **_tracking_kwargs(sample, device),
+        )
         loss = loss / virtual_batch_multiplier  # Normalize our loss (if averaged)
         loss = loss.mean()
         loss.backward()  # Backward pass
@@ -367,7 +402,14 @@ def train_vanilla_3d(
         center_images = sample["center_image"].squeeze(1).to(device)  # BZYX
 
         output = model(im)  # B 7 Z Y X
-        loss = criterion(output, instances, class_labels, center_images, **args)
+        loss = criterion(
+            output,
+            instances,
+            class_labels,
+            center_images,
+            **args,
+            **_tracking_kwargs(sample, device),
+        )
         loss = loss.mean()
         optimizer.zero_grad()
         loss.backward()
@@ -443,6 +485,7 @@ def val(virtual_batch_multiplier, one_hot, n_sigma, args, device):
                 class_labels,
                 center_images,
                 **args,
+                **_tracking_kwargs(sample, device),
                 iou=True,
                 iou_meter=iou_meter
             )
@@ -521,6 +564,7 @@ def val_vanilla(
                 class_labels,
                 center_images,
                 **args,
+                **_tracking_kwargs(sample, device),
                 iou=True,
                 iou_meter=iou_meter
             )
@@ -656,6 +700,7 @@ def val_3d(virtual_batch_multiplier, one_hot, n_sigma, args, device):
                 class_labels,
                 center_images,
                 **args,
+                **_tracking_kwargs(sample, device),
                 iou=True,
                 iou_meter=iou_meter
             )
@@ -750,6 +795,7 @@ def val_vanilla_3d(
                 class_labels,
                 center_images,
                 **args,
+                **_tracking_kwargs(sample, device),
                 iou=True,
                 iou_meter=iou_meter
             )
@@ -1117,6 +1163,14 @@ def begin_training(
         scheduler.step()
         print("===> train loss: {:.2f}".format(train_loss))
         print("===> val loss: {:.2f}, val iou: {:.2f}".format(val_loss, val_iou))
+        if hasattr(criterion, "report_tracking_metrics"):  # tracking loss only
+            m = criterion.report_tracking_metrics(reset=True)
+            print(
+                "===> val tracking (GT segmentation): association accuracy "
+                "{:.3f} ({} objects), division F1 {:.3f}".format(
+                    m["assoc_acc"], m["n_objects"], m["div_f1"]
+                )
+            )
 
         logger.add("train", train_loss)
         logger.add("val", val_loss)

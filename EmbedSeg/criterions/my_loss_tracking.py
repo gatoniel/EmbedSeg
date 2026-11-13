@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -62,10 +63,63 @@ class SpatialEmbTrackingLoss(nn.Module):
             )
         self.n_seg = self.ndim + self.n_sigma + 1
         self.last_terms = {}
+        self._metrics = self._empty_metrics()
+
+    @staticmethod
+    def _empty_metrics():
+        return dict(correct=0, total=0, tp=0, fp=0, fn=0)
 
     @property
     def grid(self):
         return self.seg_loss.xym if self.ndim == 2 else self.seg_loss.xyzm
+
+    @torch.no_grad()
+    def _update_metrics(self, emb, div_logit, instance, parent, inst_prev):
+        """Validation metrics on the GT segmentation of sample ``b``: does the
+        predicted position point into the right parent (``associate_tracks``), and
+        is the division flag right (object level, mean probability >= 0.5)?"""
+        from EmbedSeg.utils.tracking_inference import (
+            associate_tracks,
+            embedding_to_index,
+            grid_steps,
+        )
+
+        inst = instance[0].cpu().numpy().astype(np.int32)
+        par = parent[0].cpu().numpy()
+        prev = inst_prev[0].cpu().numpy().astype(np.int32)
+        steps = grid_steps(self.grid.cpu().numpy())
+        idx = embedding_to_index(emb.cpu().numpy(), steps)
+        prob = torch.sigmoid(div_logit).cpu().numpy()
+        res = associate_tracks(inst, idx, prev, division_prob=prob, next_id=int(max(prev.max(), inst.max())) + 1)
+        gt_children = {}
+        for i in np.unique(inst[inst > 0]):
+            p = int(par[inst == i].max())
+            gt_children.setdefault(p, []).append(int(i))
+        for i, pred_p in res["parents"].items():
+            gt_p = int(par[inst == i].max())
+            if gt_p < 0:  # parent unknown (hidden / outside the crop): no label
+                continue
+            self._metrics["total"] += 1
+            self._metrics["correct"] += int(pred_p == gt_p)
+            gt_div = gt_p > 0 and len(gt_children[gt_p]) > 1
+            pred_div = bool(prob[inst == i].mean() >= 0.5)
+            self._metrics["tp"] += int(gt_div and pred_div)
+            self._metrics["fp"] += int((not gt_div) and pred_div)
+            self._metrics["fn"] += int(gt_div and not pred_div)
+
+    def report_tracking_metrics(self, reset=True):
+        """Association accuracy and division F1 accumulated since the last reset
+        (collected while the loss is called with ``iou=True``, i.e. in validation)."""
+        m = self._metrics
+        tp, fp, fn = m["tp"], m["fp"], m["fn"]
+        out = dict(
+            assoc_acc=m["correct"] / m["total"] if m["total"] else 0.0,
+            n_objects=m["total"],
+            div_f1=2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else 0.0,
+        )
+        if reset:
+            self._metrics = self._empty_metrics()
+        return out
 
     def forward(
         self,
@@ -164,7 +218,11 @@ class SpatialEmbTrackingLoss(nn.Module):
                 terms["var"] += float(var_l.detach())
                 terms["reg"] += float(reg_l.detach())
 
-            fg = instance[0] > 0
+            if iou:  # validation: collect association / division metrics
+                self._update_metrics(emb, div_logit, instance, parent, inst_prev)
+
+            # division label only where the parent is known (parent == -1: unknown)
+            fg = (instance[0] > 0) & (parent[0] >= 0)
             if fg.any():
                 div = F.binary_cross_entropy_with_logits(
                     div_logit[fg],

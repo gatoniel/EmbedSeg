@@ -75,13 +75,20 @@ def perturb_prev_instance(instance, center_image, rng, p_drop=0.05, p_erode=0.1)
     return instance, center_image
 
 
-def build_parent_map(instance_t, instance_prev, lineage=None):
+def build_parent_map(instance_t, instance_prev, lineage=None, new_objects=False):
     """For every pixel of frame t the id of the parent object in frame t-1.
 
     An object whose id also exists in frame t-1 continues that track (parent = id).
     Otherwise ``lineage[id]`` (child id -> parent id, e.g. from a Cell Tracking
-    Challenge ``man_track.txt``) is used if that parent is present in frame t-1.
-    Objects without a resolvable parent get 0.
+    Challenge ``man_track.txt``) is used.
+
+    Values for object pixels: ``>0`` parent id (visible in frame t-1 of this
+    crop); ``-1`` the parent is *unknown*: the lineage names a parent that is not
+    visible in frame t-1 (outside the crop, or hidden by ignored -1 pixels), or no
+    parent can be found at all. Tracking and division of such an object must not be
+    used as labels. With ``new_objects=True`` an object without any parent
+    information is instead a known new track (``0``). Pixels that are not part
+    of an object are 0.
     """
     lineage = lineage or {}
     prev_ids = set(np.unique(instance_prev[instance_prev > 0]).tolist())
@@ -92,8 +99,10 @@ def build_parent_map(instance_t, instance_prev, lineage=None):
             p = i
         else:
             p = int(lineage.get(i, 0))
-            if p not in prev_ids:
-                p = 0
+            if p and p not in prev_ids:
+                p = -1
+            elif not p and not new_objects:
+                p = -1
         if p:
             parent[instance_t == i] = p
     return parent

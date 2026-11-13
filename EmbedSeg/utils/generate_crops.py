@@ -1311,3 +1311,134 @@ def process_3d_ilp(
                             + "_YX.tif",
                             center_image_crop,
                         )
+
+
+def read_lineage(track_file):
+    """Reads a Cell Tracking Challenge track file (``man_track.txt`` /
+    ``res_track.txt``, lines ``id first_frame last_frame parent``).
+
+    Returns
+    -------
+    dict: {track id: parent track id} for all tracks that have a parent
+    """
+    lineage = {}
+    with open(track_file) as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 4 and int(parts[3]) > 0:
+                lineage[int(parts[0])] = int(parts[3])
+    return lineage
+
+
+def process_tracking(
+    ims,
+    insts,
+    crops_dir,
+    data_subset,
+    crop_size_x,
+    crop_size_y,
+    center,
+    crop_size_z=None,
+    lineage=None,
+    n_frames=2,
+    norm="min-max-percentile",
+    data_type="8-bit",
+    normalization_factor=None,
+    anisotropy_factor=1.0,
+    speed_up=1.0,
+    fraction_max_ids=1.0,
+    background_id=0,
+    name=None,
+):
+    """Generates crops for tracking from one time-lapse sequence (2D+t, or 3D+t if
+    `crop_size_z` is given). One sample is written per object of every reference
+    frame t >= n_frames-1: a window around the object's centroid, cut at the
+    *same position* from the `n_frames` frames t-n_frames+1 ... t.
+
+    Parameters
+    ----------
+    ims, insts: lists of paths (ordered in time) to the raw images and label masks.
+        Label masks must carry track-consistent ids (the same object keeps its id);
+        pixels labelled -1 are ignored. Daughter cells carry new ids, their parents
+        are given by `lineage`.
+    lineage: dict {daughter id: parent id}, or path to a Cell Tracking Challenge
+        track file (see `read_lineage`). Objects whose id also exists in the previous
+        frame continue that track and need no entry.
+    n_frames: int
+        Number of frames per sample (>= 2).
+    name: str
+        Prefix of the written files, default: base name of the first image.
+
+    Other parameters are as in `process` / `process_3d`. Written layout (see
+    `EmbedSeg.utils.tracking`): `images/` K x [Z]YX, `masks/` (K+1) x [Z]YX (ids of the K
+    frames and a `parent` channel), `center-<center>/` K x [Z]YX.
+
+    Returns
+    -------
+    list of str: the written file names
+    """
+    from EmbedSeg.utils.tracking import build_parent_map
+
+    assert len(ims) == len(insts) and len(ims) >= n_frames >= 2
+    if isinstance(lineage, str):
+        lineage = read_lineage(lineage)
+    ndim = 2 if crop_size_z is None else 3
+    sizes = (crop_size_y, crop_size_x) if ndim == 2 else (crop_size_z, crop_size_y, crop_size_x)
+    name = name or os.path.splitext(os.path.basename(ims[0]))[0]
+    image_path = os.path.join(crops_dir, data_subset, "images")
+    instance_path = os.path.join(crops_dir, data_subset, "masks")
+    center_path = os.path.join(crops_dir, data_subset, "center-" + center)
+    for p in (image_path, instance_path, center_path):
+        os.makedirs(p, exist_ok=True)
+
+    frames, instances = [], []
+    for im, inst in zip(ims, insts):
+        image = tifffile.imread(im).astype(float)
+        instance = fill_label_holes(tifffile.imread(inst).astype(np.int32))
+        assert image.ndim == ndim and instance.shape == image.shape
+        if norm == "min-max-percentile":
+            image = normalize_min_max_percentile(image, 1, 99.8, axis=tuple(range(ndim)))
+        elif norm == "mean-std":
+            image = normalize_mean_std(image)
+        elif norm == "absolute":
+            image /= normalization_factor or (255 if data_type == "8-bit" else 65535)
+        # background -> 0, ignore label (-1) is kept
+        instance = np.where(instance < 0, -1, np.where(instance > background_id, instance, 0))
+        frames.append(image.astype(np.float32))
+        instances.append(instance.astype(np.int32))
+    if max(int(i.max()) for i in instances) > np.iinfo(np.int16).max:
+        raise ValueError("ids above 32767 are not supported, relabel the sequence first")
+
+    written = []
+    for t in range(n_frames - 1, len(frames)):
+        window = range(t - n_frames + 1, t + 1)
+        inst_t = instances[t]
+        ids = np.unique(inst_t[inst_t > 0])
+        subset = np.random.choice(ids, int(fraction_max_ids * len(ids)), replace=False)
+        for j, id in enumerate(subset):
+            coords = np.where(inst_t == id)
+            starts = tuple(
+                int(np.clip(np.mean(c) - s / 2, 0, dim - s))
+                for c, s, dim in zip(coords, sizes, inst_t.shape)
+            )
+            sl = tuple(slice(a, a + s) for a, s in zip(starts, sizes))
+            if inst_t[sl].shape != sizes:
+                continue  # image smaller than the crop
+            inst_crops = np.stack([instances[k][sl] for k in window])
+            centers = []
+            for ic in inst_crops:
+                cids = np.unique(ic[ic > 0])
+                if ndim == 2:
+                    centers.append(generate_center_image(ic, center, cids, False))
+                else:
+                    centers.append(
+                        generate_center_image_3d(ic, center, cids, False, anisotropy_factor, speed_up)
+                    )
+            parent = build_parent_map(inst_crops[-1], inst_crops[-2], lineage)
+            masks = np.concatenate([inst_crops, parent[None].astype(np.int32)], 0)
+            fname = "{}_t{:04d}_{:03d}.tif".format(name, t, j)
+            tifffile.imwrite(os.path.join(image_path, fname), np.stack([frames[k][sl] for k in window]))
+            tifffile.imwrite(os.path.join(instance_path, fname), masks.astype(np.int32))
+            tifffile.imwrite(os.path.join(center_path, fname), np.stack(centers).astype(np.uint8))
+            written.append(fname)
+    return written

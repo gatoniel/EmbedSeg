@@ -125,6 +125,117 @@ def create_dataset_dict(
     return dataset_dict
 
 
+def create_tracking_dataset_dict(
+    data_dir,
+    project_name,
+    size,
+    center,
+    type,
+    name="2d_tracking",
+    n_frames=2,
+    prev_seg=("mask", "blob"),
+    blob_sigma=2.0,
+    p_nocontext=0.2,
+    p_leading=0.2,
+    perturb_prev=True,
+    batch_size=16,
+    virtual_batch_multiplier=1,
+    workers=8,
+):
+    """
+    Creates `dataset_dict` for tracking (`TrackingDataset`, see
+    `EmbedSeg.utils.tracking` for the sample layout on disk).
+    Parameters
+    ----------
+    name: string
+        One of '2d_tracking' or '3d_tracking'
+    n_frames: int
+        Number of frames per sample (>= 2); the last one is segmented
+    prev_seg: tuple of str
+        Channels describing the segmentation of each earlier frame,
+        any of 'mask', 'blob'
+    blob_sigma: float
+        Width (pixels) of the Gaussian blob drawn at each earlier object centre
+    p_nocontext, p_leading, perturb_prev:
+        Training only (ignored for type != 'train'): probability to blank all
+        earlier frames (sequence start), probability to blank only the oldest
+        frames, and whether to perturb the earlier segmentation
+        (random dropped / eroded objects).
+    The other parameters are as in `create_dataset_dict`.
+    """
+    assert name in ("2d_tracking", "3d_tracking")
+    keys = (
+        "image",
+        "instance",
+        "label",
+        "center_image",
+        "instance_prev",
+        "center_image_prev",
+        "parent",
+        "division",
+    )
+    rot = "RandomRotationsAndFlips" if name == "2d_tracking" else "RandomRotationsAndFlips_3d"
+    set_transforms = my_transforms.get_transform(
+        [
+            {"name": rot, "opts": {"keys": keys, "degrees": 90}},
+            {
+                "name": "ToTensorFromNumpy",
+                "opts": {"keys": keys, "type": (torch.FloatTensor,) * len(keys)},
+            },
+        ]
+    )
+    train = type == "train"
+    dataset_dict = {
+        "name": name,
+        "kwargs": {
+            "center": "center-" + center,
+            "data_dir": os.path.join(data_dir, project_name),
+            "type": type,
+            "size": size,
+            "transform": set_transforms,
+            "n_frames": n_frames,
+            "prev_seg": tuple(prev_seg),
+            "blob_sigma": blob_sigma,
+            "p_nocontext": p_nocontext if train else 0.0,
+            "p_leading": p_leading if train else 0.0,
+            "perturb_prev": perturb_prev if train else False,
+        },
+        "batch_size": batch_size,
+        "virtual_batch_multiplier": virtual_batch_multiplier,
+        "workers": workers,
+    }
+    print(
+        "`{}_dataset_dict` (tracking) successfully created with: "
+        "\n -- {} frames per sample, previous-segmentation channels {}, "
+        "\n -- data accessed from {}".format(
+            type,
+            n_frames,
+            tuple(prev_seg),
+            os.path.join(data_dir, project_name, type),
+        )
+    )
+    return dataset_dict
+
+
+def create_tracking_model_dict(n_frames=2, prev_seg=("mask", "blob"), name="2d_tracking", n_sigma=None):
+    """
+    Creates `model_dict` for a tracking model with three decoders:
+    segmentation offsets+sigma, seed, and tracking offsets+sigma+division flag
+    (2D: [4, 1, 5], 3D: [6, 1, 7] for the default `n_sigma`).
+    `input_channels` follows from `n_frames` and `prev_seg`.
+    """
+    from EmbedSeg.utils.tracking import n_input_channels
+
+    assert name in ("2d_tracking", "3d_tracking")
+    nd = 2 if name == "2d_tracking" else 3
+    n_sigma = nd if n_sigma is None else n_sigma
+    return create_model_dict(
+        n_input_channels(n_frames, tuple(prev_seg)),
+        num_classes=[nd + n_sigma, 1, nd + n_sigma + 1],
+        name=name,
+    )
+
+
 def create_test_configs_dict(
     data_dir,
     checkpoint_path,
@@ -384,7 +495,7 @@ def create_model_dict(input_channels, num_classes=[4, 1], name="2d"):
     name: string
     """
     model_dict = {
-        "name": "branched_erfnet" if name == "2d" else "branched_erfnet_3d",
+        "name": "branched_erfnet" if name in ("2d", "2d_tracking") else "branched_erfnet_3d",
         "kwargs": {
             "num_classes": num_classes,
             "input_channels": input_channels,
@@ -400,7 +511,18 @@ def create_model_dict(input_channels, num_classes=[4, 1], name="2d"):
     return model_dict
 
 
-def create_loss_dict(foreground_weight=10, n_sigma=2, w_inst=1, w_var=10, w_seed=1):
+def create_loss_dict(
+    foreground_weight=10,
+    n_sigma=2,
+    w_inst=1,
+    w_var=10,
+    w_seed=1,
+    tracking=False,
+    w_track=1,
+    w_track_reg=1,
+    w_div=1,
+    div_pos_weight=5.0,
+):
     """
     Creates `loss_dict` dictionary from parameters.
     Parameters
@@ -412,6 +534,15 @@ def create_loss_dict(foreground_weight=10, n_sigma=2, w_inst=1, w_var=10, w_seed
         weight on variance loss
     w_seed: int/float
         weight on seediness loss
+    tracking: bool
+        If True, the segmentation + tracking loss is used
+        (`SpatialEmbTrackingLoss`, needs a tracking dataset and a model
+        from `create_tracking_model_dict`). Default False: plain segmentation.
+    w_track, w_track_reg, w_div: int/float
+        weights on the tracking (Gaussian/Lovasz), the tracking regression and
+        the division loss term (only used if `tracking` is True)
+    div_pos_weight: float
+        BCE `pos_weight` for the (rare) division pixels
     """
     loss_dict = {
         "lossOpts": {
@@ -424,6 +555,12 @@ def create_loss_dict(foreground_weight=10, n_sigma=2, w_inst=1, w_var=10, w_seed
             "w_seed": w_seed,
         },
     }
+    if tracking:
+        loss_dict["lossOpts"]["tracking"] = True
+        loss_dict["lossOpts"]["div_pos_weight"] = div_pos_weight
+        loss_dict["lossW"].update(
+            w_track=w_track, w_track_reg=w_track_reg, w_div=w_div
+        )
     print(
         "`loss_dict` dictionary successfully created \
                 with: \n -- foreground weight equal to {:.3f}, \n -- w_inst \

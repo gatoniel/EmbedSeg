@@ -290,7 +290,7 @@ class Cluster_3d:
 
         instance_map = torch.zeros(depth, height, width).short().to(self.device)
         unique_instances = gt_instance.unique()
-        unique_instances = unique_instances[unique_instances != 0]
+        unique_instances = unique_instances[unique_instances > 0]  # -1 = ignore
 
         for id in unique_instances:
             mask = gt_instance.eq(id).view(1, depth, height, width)
@@ -636,7 +636,7 @@ class Cluster:
             unique_instances = torch.arange(gt_instance.size(0))
         else:
             unique_instances = gt_instance.unique()
-            unique_instances = unique_instances[unique_instances != 0]
+            unique_instances = unique_instances[unique_instances > 0]  # -1 = ignore
 
         for id in unique_instances:
             if self.one_hot:

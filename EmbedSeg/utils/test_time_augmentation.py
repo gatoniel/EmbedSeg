@@ -81,7 +81,7 @@ def to_cuda_3d(im_numpy):
     return torch.from_numpy(im_numpy).float().cuda()
 
 
-def apply_tta_2d(im, model):
+def _apply_tta_2d_single(im, model):
     """
     Apply Test Time Augmentation for 2D Images
 
@@ -215,7 +215,7 @@ def apply_tta_2d(im, model):
     return torch.from_numpy(output).float().cuda()
 
 
-def apply_tta_3d(im, model, index):
+def _apply_tta_3d_single(im, model, index):
     """
     Apply Test Time Augmentation for 3D Images
 
@@ -545,3 +545,71 @@ def apply_tta_3d(im, model, index):
         output_numpy_correct[0, 6, ...] = output_numpy_flipped[0, 6, ...]
 
     return output_numpy_correct
+
+
+class _BlockReplayModel:
+    """Wraps a model for blockwise test-time augmentation.
+
+    The corrections of the TTA code (sign / permutation of offset and sigma
+    channels) are written for one segmentation block of 5 (2D) or 7 (3D) channels.
+    A tracking model has additional blocks of the same layout (offsets, sigma, one
+    scalar), which need exactly the same correction. In the first pass the real
+    model runs (and its outputs are recorded); in later passes the recorded
+    outputs are replayed, restricted to one channel block.
+    """
+
+    def __init__(self, model, block_size):
+        self.model = model
+        self.block_size = block_size
+        self.recorded = []
+        self.replay = False
+        self.block = 0
+        self.k = 0
+
+    def __call__(self, x):
+        if not self.replay:
+            out = self.model(x)
+            self.recorded.append(out)
+            return out
+        out = self.recorded[self.k]
+        self.k += 1
+        start = self.block * self.block_size
+        return out[:, start : start + self.block_size]
+
+    @property
+    def n_blocks(self):
+        channels = self.recorded[0].shape[1]
+        if channels > self.block_size and channels % self.block_size == 0:
+            return channels // self.block_size
+        return 1  # plain segmentation model: behave exactly as before
+
+
+def _apply_blockwise(single, im, model, block_size, concatenate, *args):
+    proxy = _BlockReplayModel(model, block_size)
+    first = single(im, proxy, *args)
+    if proxy.n_blocks == 1:
+        return first
+    parts = [first[:, :block_size]]
+    proxy.replay = True
+    for block in range(1, proxy.n_blocks):
+        proxy.block, proxy.k = block, 0
+        parts.append(single(im, proxy, *args))
+    return concatenate(parts)
+
+
+def apply_tta_2d(im, model):
+    """Test Time Augmentation for 2D images (see `_apply_tta_2d_single`).
+    Models with several 5-channel blocks (segmentation + tracking) are
+    handled blockwise; a plain 5-channel model behaves as before."""
+    return _apply_blockwise(
+        _apply_tta_2d_single, im, model, 5, lambda parts: torch.cat(parts, 1)
+    )
+
+
+def apply_tta_3d(im, model, index):
+    """Test Time Augmentation for 3D images (see `_apply_tta_3d_single`).
+    Models with several 7-channel blocks (segmentation + tracking) are
+    handled blockwise; a plain 7-channel model behaves as before."""
+    return _apply_blockwise(
+        _apply_tta_3d_single, im, model, 7, lambda parts: np.concatenate(parts, 1), index
+    )

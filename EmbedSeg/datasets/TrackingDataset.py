@@ -133,15 +133,19 @@ class TrackingDataset(Dataset):
                 K + 1, masks.shape
             )
             instances, parent = masks[:K], masks[K]
+            if masks.max() > np.iinfo(np.int16).max:
+                raise ValueError("instance ids above 32767 are not supported (int16)")
             centers = tifffile.imread(self.center_image_list[index]).astype(bool)
             assert centers.shape[0] == K
 
             inst_t = instances[-1].copy()
             inst_prev = instances[-2].copy()
-            parent = np.where(parent > 0, parent, 0).astype(np.int16)
-            # parents must exist in the (unperturbed) previous frame
+            # parent: >0 id in frame t-1, 0 no parent, -1 parent unknown (see
+            # utils.tracking.build_parent_map); ids missing from the previous
+            # (unperturbed) frame cannot be used and become unknown as well
             valid = np.isin(parent, np.unique(inst_prev[inst_prev > 0]))
-            parent = np.where(valid, parent, 0).astype(np.int16)
+            parent = np.where(parent > 0, np.where(valid, parent, -1), np.minimum(parent, 0))
+            parent = parent.astype(np.int16)
             label = (inst_t > self.bg_id).astype(np.uint8)
             inst_t_out = inst_t.astype(np.int16)
 

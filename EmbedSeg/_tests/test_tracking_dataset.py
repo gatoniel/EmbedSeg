@@ -27,7 +27,9 @@ def test_parent_map_and_division_map():
     assert set(np.unique(parent[cur == 5])) == {1}
     assert set(np.unique(parent[cur == 6])) == {1}
     assert set(np.unique(parent[cur == 2])) == {2}
-    assert set(np.unique(parent[cur == 7])) == {0}
+    assert set(np.unique(parent[cur == 7])) == {-1}  # no parent found: unknown
+    assert set(np.unique(build_parent_map(cur, prev, {5: 1, 6: 1}, new_objects=True)[cur == 7])) == {0}
+    assert not parent[cur == 0].any()  # background stays 0
     div = division_map(cur, parent)
     assert div[cur == 5].all() and div[cur == 6].all()
     assert not div[cur == 2].any() and not div[cur == 7].any()
@@ -88,3 +90,31 @@ def test_ignore_label_kept_in_reference_instance(tmp_path):
     s = ds[1]
     assert (s["instance"][0][:, 14:18] == -1).all()
     assert not s["division"][0][:, 14:18].any()
+
+
+def test_unknown_parent_is_marked_minus_one():
+    prev = np.zeros((10, 10), dtype=np.int16)
+    prev[1:4, 1:4] = 1
+    cur = np.zeros_like(prev)
+    cur[1:3, 1:4] = 5  # daughter of 1, visible parent
+    cur[6:9, 6:9] = 8  # daughter of 99, which is not in this crop
+    cur[0, 9] = 7  # genuinely new object
+    parent = build_parent_map(cur, prev, {5: 1, 8: 99})
+    assert set(np.unique(parent[cur == 5])) == {1}
+    assert set(np.unique(parent[cur == 8])) == {-1}
+    assert set(np.unique(parent[cur == 7])) == {-1}
+    assert not division_map(cur, parent)[cur == 8].any()
+
+
+def test_parent_hidden_by_ignore_label_is_unknown_in_dataset(tmp_path):
+    seq = make_sequence(ndim=2, shape=(32, 32), n_frames=5, radius=3.0, divide=((3, 0),))
+    pid = list(seq["lineage"].values())[0]
+    seq["instances"][2][seq["instances"][2] == pid] = -1  # parent unlabelled in t-1
+    write_tracking_samples(seq, str(tmp_path), "train", n_frames=2)
+    ds = TrackingDataset(data_dir=str(tmp_path), type="train", ndim=2, n_frames=2)
+    s = ds[2]  # reference frame t = 3 (division)
+    daughters = [d for d, p in seq["lineage"].items() if p == pid]
+    for d in daughters:
+        assert (s["parent"][s["instance"] == d] == -1).all()
+    assert not s["division"].any()  # no division label from unknown parents
+    assert (s["instance_prev"] == -1).any()

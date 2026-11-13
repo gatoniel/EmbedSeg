@@ -71,6 +71,7 @@ def associate_tracks(
     divisions [(parent, [new ids])], conflicts [(kind, id)]).
     """
     prev_labels = np.asarray(prev_labels)
+    prev_labels = np.where(prev_labels > 0, prev_labels, 0)  # -1 (ignore) = no object
     if next_id is None:
         next_id = int(prev_labels.max()) + 1
     if max_dist > 0 and (prev_labels > 0).any():

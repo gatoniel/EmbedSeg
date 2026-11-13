@@ -842,7 +842,7 @@ def predict(
             min_object_size=min_object_size,
         )
 
-    seed_map = torch.sigmoid(output[0, -1, ...])
+    seed_map = torch.sigmoid(output[0, 2 + n_sigma, ...])  # not -1: tracking models have more channels
     # unpad instance_map, seed_map
     if (diff_y - diff_y // 2) != 0:
         instance_map = instance_map[diff_y // 2 : -(diff_y - diff_y // 2), ...]
@@ -939,7 +939,7 @@ def predict_3d(
             min_unclustered_sum=min_unclustered_sum,
             min_object_size=min_object_size,
         )
-    seed_map = torch.sigmoid(output[0, -1, ...])
+    seed_map = torch.sigmoid(output[0, 3 + n_sigma, ...])  # not -1: tracking models have more channels
     # unpad instance_map, seed_map
 
     if diff_z != 0:

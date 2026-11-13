@@ -12,8 +12,11 @@ from EmbedSeg.datasets.TrackingDataset import TrackingDataset
 from EmbedSeg.utils.synthetic_tracking import make_sequence, write_tracking_samples
 
 
-def _batch(tmp_path, ndim, frame_idx, shape, n_frames=2, ignore_stripe=False, **ds_kw):
+def _batch(tmp_path, ndim, frame_idx, shape, n_frames=2, ignore_stripe=False, hide_parent=False, **ds_kw):
     seq = make_sequence(ndim=ndim, shape=shape, n_frames=5, radius=3.0, divide=((3, 0),))
+    if hide_parent:  # the dividing parent is unlabelled (-1) in frame t-1
+        pid = list(seq['lineage'].values())[0]
+        seq['instances'][2][seq['instances'][2] == pid] = -1
     if ignore_stripe:
         seq["instances"][:, ..., 14:16] = -1
     write_tracking_samples(seq, str(tmp_path), "train", n_frames=n_frames)
@@ -137,3 +140,23 @@ def test_get_loss_is_opt_in():
         {"n_sigma": 2, "foreground_weight": 1, "tracking": True},
     )
     assert isinstance(trk, SpatialEmbTrackingLoss)
+
+
+def test_unknown_parent_pixels_get_no_division_gradient_and_no_metrics(tmp_path):
+    shape = (32, 32)
+    b = _batch(tmp_path, 2, 2, shape, hide_parent=True)  # division frame, parent hidden
+    unknown = (b["parents"][0] < 0) & (b["instances"][0] > 0)
+    known = (b["parents"][0] > 0) & (b["instances"][0] > 0)
+    assert unknown.any() and known.any()
+    crit = _loss(2, shape)
+    nd, ns = 2, 2
+    pred = (0.1 * torch.randn(1, 2 * crit.n_seg, *shape)).requires_grad_()
+    from EmbedSeg.utils.utils import AverageMeter
+
+    crit(pred, **b, iou=True, iou_meter=AverageMeter()).backward()
+    div_grad = pred.grad[0, crit.n_seg + nd + ns]
+    assert div_grad[unknown].abs().sum() == 0
+    assert div_grad[known].abs().sum() > 0
+    m = crit.report_tracking_metrics()
+    n_known_objects = len(np.unique(b["instances"][0][known].numpy()))
+    assert m["n_objects"] == n_known_objects  # objects with unknown parent are not scored
